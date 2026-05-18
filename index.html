@@ -412,45 +412,140 @@ const HomeView = ({xp,level,streak,badges,courses,onNavigate,isTablet,profile,ra
 
 // ─── COURSES ──────────────────────────────────────────────────────────────────
 const CoursesView = ({courses,onAddCourse,onViewCourse,isTablet}) => {
-  const [showForm,setShowForm]=useState(false);
-  const [title,setTitle]=useState("");
-  const [subject,setSubject]=useState("math");
-  const [content,setContent]=useState("");
-  const [imgDataUrl,setImgDataUrl]=useState(null);
-  const [imgInfo,setImgInfo]=useState(null);
-  const [analyzing,setAnalyzing]=useState(false);
-  const [analysis,setAnalysis]=useState(null);
-  const [aiError,setAiError]=useState(false);
-  const cameraRef=useRef();   // capture="environment"
-  const galleryRef=useRef();  // accept="image/*" (photothèque)
-  const fileDocRef=useRef();  // accept="image/*,application/pdf,.pdf" (fichier)
-  const [showPicker,setShowPicker]=useState(false);
+  const [showForm,   setShowForm]   = useState(false);
+  const [title,      setTitle]      = useState("");
+  const [subject,    setSubject]    = useState("math");
+  const [content,    setContent]    = useState("");
+  // ── Multi-photos ──────────────────────────────────────────────────────────
+  const [photos,     setPhotos]     = useState([]); // [{dataUrl,base64,type}]
+  const [analyzing,  setAnalyzing]  = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState(""); // message d'étape
+  const [analysis,   setAnalysis]   = useState(null);
+  const [aiError,    setAiError]    = useState("");
+  const cameraRef  = useRef();
+  const galleryRef = useRef();
+  const fileDocRef = useRef();
+  const [showPicker, setShowPicker] = useState(false);
 
-  const reset=()=>{setTitle("");setContent("");setImgDataUrl(null);setImgInfo(null);setAnalysis(null);setAiError(false);setSubject("math");setShowForm(false);setShowPicker(false);};
+  const reset=()=>{setTitle("");setContent("");setPhotos([]);setAnalysis(null);setAiError("");setSubject("math");setShowForm(false);setShowPicker(false);setAnalyzeProgress("");};
 
-  const handlePhoto=async(e)=>{
-    const file=e.target.files[0]; if(!file)return; e.target.value="";
+  // ── Extraction JSON robuste : tente plusieurs stratégies ──────────────────
+  const extractJSON = (raw) => {
+    // 1. Nettoyer les backticks markdown
+    let s = raw.replace(/```json|```/gi,"").trim();
+    // 2. Essai direct
+    try{ return JSON.parse(s); }catch(e){}
+    // 3. Extraire le premier objet JSON avec regex
+    const m = s.match(/\{[\s\S]*\}/);
+    if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
+    // 4. Réparer les guillemets typographiques
+    s = s.replace(/[""]/g,'"').replace(/['']/g,"'");
+    try{ return JSON.parse(s); }catch(e){}
+    return null;
+  };
+
+  // ── Ajout d'une ou plusieurs photos ──────────────────────────────────────
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files||[]);
+    if(!files.length) return;
+    e.target.value = "";
     setShowPicker(false);
-    setAnalyzing(true);setAnalysis(null);setAiError(false);
+    const newPhotos = [];
+    for(const f of files){
+      try{
+        const info = await fileToBase64(f);
+        newPhotos.push(info);
+      }catch(err){ console.warn("fileToBase64 error",err); }
+    }
+    setPhotos(prev => [...prev, ...newPhotos]);
+  };
+
+  const removePhoto = (idx) => setPhotos(prev => prev.filter((_,i)=>i!==idx));
+
+  // ── Analyse IA (supporte plusieurs photos) ────────────────────────────────
+  const analyzePhotos = async () => {
+    if(!photos.length) return;
+    setAnalyzing(true); setAnalysis(null); setAiError("");
+
     try{
-      const info=await fileToBase64(file);
-      setImgDataUrl(info.dataUrl); setImgInfo(info);
-      const prompt=`Tu es un assistant pédagogique pour élève de 5e (12 ans). Analyse cette photo de cours. Réponds UNIQUEMENT en JSON valide sans backticks :
-{"titre":"titre","matiere":"math|french|history|science|english","nb_questions":6,"resume":"résumé 2-3 phrases","points_cles":["p1","p2","p3"],"quiz":[{"q":"?","choices":["A","B","C","D"],"answer":0}],"flashcards":[{"front":"?","back":"réponse"}],"jeu_vrai_faux":[{"affirmation":"...","vrai":true}],"astuce_memo":"astuce fun"}
-RÈGLE quiz : 1 question par notion, min 4 max 10.`;
-      const raw=await api(prompt,info);
-      const parsed=JSON.parse(raw.replace(/```json|```/gi,"").trim());
+      let combinedText = "";
+
+      // Étape 1 : décrire chaque photo séparément si > 1
+      if(photos.length === 1){
+        setAnalyzeProgress("📖 Lecture de la photo...");
+      } else {
+        setAnalyzeProgress(`📖 Lecture des ${photos.length} photos...`);
+        // Pour plusieurs pages : d'abord extraire le texte de chaque photo
+        const descriptions = [];
+        for(let i=0; i<photos.length; i++){
+          setAnalyzeProgress(`📖 Analyse page ${i+1}/${photos.length}...`);
+          const desc = await api(
+            `Décris précisément et intégralement tout le contenu textuel de cette photo de cours scolaire (page ${i+1}/${photos.length}). Recopie tous les titres, définitions, formules, listes et exemples visibles. Ne résume pas, transcris fidèlement.`,
+            photos[i]
+          );
+          descriptions.push(`--- PAGE ${i+1} ---\n${desc}`);
+        }
+        combinedText = descriptions.join("\n\n");
+        setAnalyzeProgress("🧠 Génération des activités...");
+      }
+
+      // Étape 2 : générer le JSON d'activités
+      const systemPrompt = `Tu es un assistant pédagogique expert pour élève de 5e (12 ans).
+${combinedText ? `Voici le contenu du cours extrait des photos :\n${combinedText}\n\n` : ""}
+Analyse ${photos.length>1?"ce cours complet (plusieurs pages)":"cette photo de cours"} et génère des activités pédagogiques.
+RÈGLE quiz : compte les notions/concepts distincts. Génère 1 question par notion. Min 4, max 10.
+Réponds avec du JSON valide UNIQUEMENT. Commence directement par { sans aucun texte avant.
+Format exact :
+{
+  "titre": "titre court du cours",
+  "matiere": "math ou french ou history ou science ou english",
+  "nb_questions": 6,
+  "resume": "résumé clair en 2-3 phrases pour élève de 12 ans",
+  "points_cles": ["notion clé 1", "notion clé 2", "notion clé 3"],
+  "quiz": [
+    {"q": "Question ?", "choices": ["A", "B", "C", "D"], "answer": 0}
+  ],
+  "flashcards": [
+    {"front": "Question courte ?", "back": "Réponse claire"}
+  ],
+  "jeu_vrai_faux": [
+    {"affirmation": "Affirmation sur le cours", "vrai": true}
+  ],
+  "astuce_memo": "astuce mémo originale et fun"
+}`;
+
+      const raw = photos.length === 1
+        ? await api(systemPrompt, photos[0])
+        : await api(systemPrompt); // texte extrait déjà dans le prompt
+
+      const parsed = extractJSON(raw);
+      if(!parsed) throw new Error("JSON invalide : "+raw.slice(0,120));
+
       setAnalysis(parsed);
-      if(parsed.titre)setTitle(parsed.titre);
-      if(parsed.matiere&&SUBJECTS.find(s=>s.id===parsed.matiere))setSubject(parsed.matiere);
-      if(parsed.resume)setContent(parsed.resume+(parsed.points_cles?.length?"\n\n📌 Points clés :\n"+parsed.points_cles.map(p=>"• "+p).join("\n"):""));
-    }catch(err){setAiError(true);}
+      if(parsed.titre) setTitle(parsed.titre);
+      if(parsed.matiere && SUBJECTS.find(s=>s.id===parsed.matiere)) setSubject(parsed.matiere);
+      if(parsed.resume) setContent(
+        parsed.resume +
+        (parsed.points_cles?.length ? "\n\n📌 Points clés :\n"+parsed.points_cles.map(p=>"• "+p).join("\n") : "")
+      );
+    } catch(err){
+      console.error("Analyse IA:",err);
+      setAiError("L'IA n'a pas pu analyser le cours. Vérifie que les photos sont nettes et bien éclairées.\nDétail : "+err.message);
+    }
     setAnalyzing(false);
+    setAnalyzeProgress("");
   };
 
   const handleSave=()=>{
-    if(!title.trim())return;
-    onAddCourse({id:Date.now(),title:title.trim(),subject,content,imgDataUrl,analysis,date:new Date().toLocaleDateString("fr-FR")});
+    if(!title.trim()) return;
+    onAddCourse({
+      id: Date.now(),
+      title: title.trim(), subject, content,
+      imgDataUrl: photos[0]?.dataUrl || null, // première photo pour la vignette
+      photos: photos.map(p=>p.dataUrl),       // toutes les photos
+      analysis,
+      date: new Date().toLocaleDateString("fr-FR")
+    });
     reset();
   };
 
@@ -461,7 +556,7 @@ RÈGLE quiz : 1 question par notion, min 4 max 10.`;
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
         <div>
           <h2 style={{color:"#fff",margin:0,fontSize:22,fontFamily:"'Fredoka One',cursive"}}>📚 Mes Cours</h2>
-          {isTablet&&<p style={{color:"#7c7cac",fontSize:13,margin:"4px 0 0"}}>Photo → activités IA générées automatiquement</p>}
+          {isTablet&&<p style={{color:"#7c7cac",fontSize:13,margin:"4px 0 0"}}>Photos → activités IA générées automatiquement</p>}
         </div>
         <button onClick={()=>setShowForm(v=>!v)} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:12,padding:"10px 20px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:14}}>
           {showForm?"✕ Fermer":"+ Ajouter"}
@@ -472,29 +567,45 @@ RÈGLE quiz : 1 question par notion, min 4 max 10.`;
         <div style={{background:"#1a1a2e",borderRadius:20,padding:24,border:"1px solid #6C63FF44",marginBottom:24,animation:"fadeIn .2s ease"}}>
           <h3 style={{color:"#a78bfa",margin:"0 0 18px",fontSize:16}}>📷 Nouveau cours</h3>
 
-          {/* Sur iPad : layout côte à côte */}
           <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
             <div style={{flex:"1 1 280px"}}>
-              {/* ── 3 INPUTS cachés ── */}
-              <input ref={cameraRef}  type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handlePhoto}/>
-              <input ref={galleryRef} type="file" accept="image/*"                       style={{display:"none"}} onChange={handlePhoto}/>
-              <input ref={fileDocRef} type="file" accept="image/*,image/jpeg,image/png,image/webp,image/heic" style={{display:"none"}} onChange={handlePhoto}/>
 
-              {/* ── Zone principale ── */}
-              {imgDataUrl ? (
-                /* Photo déjà chargée → aperçu + bouton changer */
+              {/* ── 3 INPUTS cachés (multiple pour galerie/fichier) ── */}
+              <input ref={cameraRef}  type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFiles}/>
+              <input ref={galleryRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleFiles}/>
+              <input ref={fileDocRef} type="file" accept="image/*,image/heic,image/heif" multiple style={{display:"none"}} onChange={handleFiles}/>
+
+              {/* ── Grille des photos ajoutées ── */}
+              {photos.length > 0 && (
                 <div style={{marginBottom:14}}>
-                  <img src={imgDataUrl} alt="cours" style={{width:"100%",maxHeight:220,objectFit:"cover",borderRadius:12,border:"1px solid #43B89C44",marginBottom:10}}/>
-                  <button onClick={()=>setShowPicker(p=>!p)} style={{width:"100%",background:"#0d2218",border:"1px solid #43B89C55",borderRadius:10,padding:"10px",color:"#43B89C",fontWeight:700,cursor:"pointer",fontSize:13}}>
-                    🔄 Changer la photo
-                  </button>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:8,marginBottom:10}}>
+                    {photos.map((p,i)=>(
+                      <div key={i} style={{position:"relative",borderRadius:10,overflow:"hidden",aspectRatio:"1",border:"2px solid #43B89C44"}}>
+                        <img src={p.dataUrl} alt={`page ${i+1}`} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+                        <div style={{position:"absolute",top:0,left:0,right:0,background:"#00000088",padding:"2px 0",textAlign:"center"}}>
+                          <span style={{color:"#fff",fontSize:10,fontWeight:700}}>P.{i+1}</span>
+                        </div>
+                        <button onClick={()=>removePhoto(i)} style={{position:"absolute",top:2,right:2,background:"#FF658488",border:"none",borderRadius:"50%",width:20,height:20,cursor:"pointer",color:"#fff",fontSize:11,lineHeight:"20px",padding:0}}>✕</button>
+                      </div>
+                    ))}
+                    {/* Bouton + pour ajouter d'autres photos */}
+                    <button onClick={()=>setShowPicker(p=>!p)} style={{aspectRatio:"1",borderRadius:10,background:"#16163a",border:"2px dashed #6C63FF55",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,color:"#6C63FF"}}>
+                      <span style={{fontSize:22}}>+</span>
+                      <span style={{fontSize:10,fontWeight:700}}>Page</span>
+                    </button>
+                  </div>
+                  <p style={{color:"#7c7cac",fontSize:11,margin:"0 0 10px",textAlign:"center"}}>
+                    {photos.length} page{photos.length>1?"s":""} · Glisse pour réordonner
+                  </p>
                 </div>
-              ) : (
-                /* Pas encore de photo → gros bouton d'invitation */
+              )}
+
+              {/* ── Bouton principal si aucune photo ── */}
+              {photos.length === 0 && (
                 <button onClick={()=>setShowPicker(p=>!p)} style={{width:"100%",padding:"24px 16px",marginBottom:10,background:"#16163a",border:"2px dashed #6C63FF",borderRadius:14,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:8,color:"#a78bfa"}}>
                   <span style={{fontSize:40}}>📷</span>
-                  <span style={{fontWeight:700,fontSize:14}}>Ajouter une photo du cours</span>
-                  <span style={{fontSize:12,color:"#7c7cac"}}>L'IA génère quiz adapté + flashcards + vrai/faux</span>
+                  <span style={{fontWeight:700,fontSize:14}}>Ajouter les photos du cours</span>
+                  <span style={{fontSize:12,color:"#7c7cac"}}>1 ou plusieurs pages · L'IA analyse tout</span>
                 </button>
               )}
 
@@ -502,12 +613,12 @@ RÈGLE quiz : 1 question par notion, min 4 max 10.`;
               {showPicker&&(
                 <div style={{background:"#0f0f23",border:"1px solid #6C63FF55",borderRadius:14,overflow:"hidden",marginBottom:14,animation:"fadeIn .15s ease"}}>
                   {[
-                    {icon:"📸", label:"Prendre une photo",    sub:"Ouvrir l'appareil photo",  ref:cameraRef},
-                    {icon:"🖼️", label:"Photothèque",          sub:"Choisir depuis mes photos", ref:galleryRef},
-                    {icon:"📁", label:"Fichier",               sub:"Parcourir mes fichiers",    ref:fileDocRef},
+                    {icon:"📸", label:"Prendre une photo",    sub:"Caméra — une page à la fois", ref:cameraRef},
+                    {icon:"🖼️", label:"Photothèque",          sub:"Sélectionner 1 ou plusieurs",  ref:galleryRef},
+                    {icon:"📁", label:"Fichiers",              sub:"Depuis iCloud, Drive...",       ref:fileDocRef},
                   ].map((opt,i,arr)=>(
-                    <button key={opt.label} onClick={()=>{ opt.ref.current?.click(); }}
-                      style={{width:"100%",background:"none",border:"none",borderBottom:i<arr.length-1?"1px solid #2d2d4e":"none",padding:"14px 18px",cursor:"pointer",display:"flex",alignItems:"center",gap:14,textAlign:"left",transition:"background .15s"}}
+                    <button key={opt.label} onClick={()=>opt.ref.current?.click()}
+                      style={{width:"100%",background:"none",border:"none",borderBottom:i<arr.length-1?"1px solid #2d2d4e":"none",padding:"14px 18px",cursor:"pointer",display:"flex",alignItems:"center",gap:14,textAlign:"left"}}
                       onMouseEnter={e=>e.currentTarget.style.background="#1a1a2e"}
                       onMouseLeave={e=>e.currentTarget.style.background="none"}
                     >
@@ -519,15 +630,28 @@ RÈGLE quiz : 1 question par notion, min 4 max 10.`;
                       <span style={{marginLeft:"auto",color:"#4a4a6a",fontSize:18}}>›</span>
                     </button>
                   ))}
-                  <button onClick={()=>setShowPicker(false)} style={{width:"100%",background:"none",border:"none",borderTop:"1px solid #2d2d4e",padding:"12px",color:"#7c7cac",cursor:"pointer",fontSize:13,fontWeight:600}}>
-                    Annuler
-                  </button>
+                  <button onClick={()=>setShowPicker(false)} style={{width:"100%",background:"none",border:"none",borderTop:"1px solid #2d2d4e",padding:"12px",color:"#7c7cac",cursor:"pointer",fontSize:13,fontWeight:600}}>Annuler</button>
                 </div>
               )}
-              {imgDataUrl&&<img src={imgDataUrl} alt="cours" style={{width:"100%",maxHeight:220,objectFit:"cover",borderRadius:12,border:"1px solid #43B89C44"}}/>}
-              {analyzing&&<Spinner text="L'IA analyse ton cours..."/>}
-              {analysis&&!aiError&&(
-                <div style={{background:"#0a2018",border:"1px solid #43B89C55",borderRadius:12,padding:14,marginTop:14}}>
+
+              {/* ── Bouton Analyser ── */}
+              {photos.length > 0 && !analysis && !analyzing && (
+                <button onClick={analyzePhotos} style={{width:"100%",background:"linear-gradient(135deg,#43B89C,#2dd4bf)",border:"none",borderRadius:12,padding:"13px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:14,marginBottom:10}}>
+                  ✨ Analyser {photos.length > 1 ? `les ${photos.length} pages` : "la photo"} avec l'IA
+                </button>
+              )}
+
+              {/* ── Progression ── */}
+              {analyzing && (
+                <div style={{textAlign:"center",padding:"16px 0"}}>
+                  <div style={{fontSize:28,animation:"spin 1s linear infinite",display:"inline-block"}}>⚙️</div>
+                  <p style={{color:"#a78bfa",fontSize:13,marginTop:8,fontWeight:600}}>{analyzeProgress||"Analyse en cours..."}</p>
+                </div>
+              )}
+
+              {/* ── Résultat analyse ── */}
+              {analysis && !aiError && (
+                <div style={{background:"#0a2018",border:"1px solid #43B89C55",borderRadius:12,padding:14,marginBottom:10}}>
                   <p style={{color:"#43B89C",fontWeight:700,margin:"0 0 8px",fontSize:14}}>✨ Cours analysé !</p>
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                     <span style={{background:"#6C63FF22",color:"#a78bfa",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>🎯 {analysis.nb_questions} questions</span>
@@ -535,9 +659,18 @@ RÈGLE quiz : 1 question par notion, min 4 max 10.`;
                     <span style={{background:"#F7B73122",color:"#F7B731",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>⚡ {analysis.jeu_vrai_faux?.length} vrai/faux</span>
                   </div>
                   {analysis.astuce_memo&&<p style={{color:"#a78bfa",fontSize:12,margin:"8px 0 0",fontStyle:"italic"}}>💡 {analysis.astuce_memo}</p>}
+                  <button onClick={analyzePhotos} style={{marginTop:10,background:"none",border:"1px solid #43B89C44",borderRadius:8,padding:"5px 12px",color:"#43B89C",cursor:"pointer",fontSize:12}}>🔄 Relancer l'analyse</button>
                 </div>
               )}
-              {aiError&&<div style={{background:"#200a0a",border:"1px solid #FF658455",borderRadius:12,padding:12,marginTop:14}}><p style={{color:"#FF6584",fontSize:13,margin:0}}>❌ Photo illisible. Essaie avec une meilleure lumière.</p></div>}
+
+              {/* ── Erreur ── */}
+              {aiError && (
+                <div style={{background:"#200a0a",border:"1px solid #FF658455",borderRadius:12,padding:14,marginBottom:10}}>
+                  <p style={{color:"#FF6584",fontSize:13,margin:"0 0 8px",fontWeight:700}}>❌ Analyse échouée</p>
+                  <p style={{color:"#FF658488",fontSize:12,margin:"0 0 10px",lineHeight:1.5}}>{aiError}</p>
+                  <button onClick={analyzePhotos} style={{background:"none",border:"1px solid #FF658455",borderRadius:8,padding:"6px 14px",color:"#FF6584",cursor:"pointer",fontSize:12,fontWeight:700}}>🔄 Réessayer</button>
+                </div>
+              )}
             </div>
 
             <div style={{flex:"1 1 280px",display:"flex",flexDirection:"column",gap:10}}>
@@ -547,7 +680,7 @@ RÈGLE quiz : 1 question par notion, min 4 max 10.`;
                 style={{width:"100%",background:"#0f0f23",border:"1px solid #2d2d4e",borderRadius:10,padding:"12px 16px",color:"#fff",fontSize:15,outline:"none"}}>
                 {SUBJECTS.map(s=><option key={s.id} value={s.id}>{s.emoji} {s.label}</option>)}
               </select>
-              <textarea value={content} onChange={e=>setContent(e.target.value)} placeholder="Notes ou résumé..." rows={isTablet?6:4}
+              <textarea value={content} onChange={e=>setContent(e.target.value)} placeholder="Notes ou résumé (auto-rempli après analyse)..." rows={isTablet?6:4}
                 style={{width:"100%",background:"#0f0f23",border:"1px solid #2d2d4e",borderRadius:10,padding:"12px 16px",color:"#fff",fontSize:14,outline:"none",resize:"vertical",fontFamily:"inherit",flex:1}}/>
               <div style={{display:"flex",gap:10}}>
                 <button onClick={handleSave} disabled={!title.trim()} style={{flex:1,background:title.trim()?"linear-gradient(135deg,#6C63FF,#a78bfa)":"#2d2d4e",border:"none",borderRadius:12,padding:14,color:"#fff",fontWeight:700,cursor:title.trim()?"pointer":"not-allowed",fontSize:15}}>💾 Enregistrer</button>
