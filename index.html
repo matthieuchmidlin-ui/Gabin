@@ -487,74 +487,110 @@ const CoursesView = ({courses,onAddCourse,onViewCourse,isTablet}) => {
   const removePhoto = (idx) => setPhotos(prev => prev.filter((_,i)=>i!==idx));
 
   // ── Analyse IA (supporte plusieurs photos) ────────────────────────────────
-  const analyzePhotos = async () => {
-    if(!photos.length) return;
+  const canAnalyze = photos.length > 0 || content.trim().length > 20 || title.trim().length > 3;
+
+  const analyzeContent = async () => {
+    if(!canAnalyze) return;
     setAnalyzing(true); setAnalysis(null); setAiError("");
 
     try{
-      let combinedText = "";
+      let raw = "";
 
-      // Étape 1 : décrire chaque photo séparément si > 1
-      if(photos.length === 1){
-        setAnalyzeProgress("📖 Lecture de la photo...");
-      } else {
-        setAnalyzeProgress(`📖 Lecture des ${photos.length} photos...`);
-        // Pour plusieurs pages : d'abord extraire le texte de chaque photo
-        const descriptions = [];
-        for(let i=0; i<photos.length; i++){
-          setAnalyzeProgress(`📖 Analyse page ${i+1}/${photos.length}...`);
-          const desc = await api(
-            `Décris précisément et intégralement tout le contenu textuel de cette photo de cours scolaire (page ${i+1}/${photos.length}). Recopie tous les titres, définitions, formules, listes et exemples visibles. Ne résume pas, transcris fidèlement.`,
-            photos[i]
-          );
-          descriptions.push(`--- PAGE ${i+1} ---\n${desc}`);
-        }
-        combinedText = descriptions.join("\n\n");
-        setAnalyzeProgress("🧠 Génération des activités...");
-      }
-
-      // Étape 2 : générer le JSON d'activités
-      const systemPrompt = `Tu es un assistant pédagogique expert pour élève de 5e (12 ans).
-${combinedText ? `Voici le contenu du cours extrait des photos :\n${combinedText}\n\n` : ""}
-Analyse ${photos.length>1?"ce cours complet (plusieurs pages)":"cette photo de cours"} et génère des activités pédagogiques.
-RÈGLE quiz : compte les notions/concepts distincts. Génère 1 question par notion. Min 4, max 10.
-Réponds avec du JSON valide UNIQUEMENT. Commence directement par { sans aucun texte avant.
-Format exact :
+      if(photos.length === 0) {
+        // ── CAS 1 : Texte uniquement (pas de photo) ──────────────────────
+        setAnalyzeProgress("🧠 Génération des activités depuis le texte...");
+        const textContent = (title.trim() ? `Titre : ${title.trim()}\n\n` : "") + content.trim();
+        const prompt = `Tu es un assistant pédagogique expert pour un élève de 5e (12 ans).
+Voici un cours rédigé par l'élève :
+---
+${textContent}
+---
+Génère des activités pédagogiques adaptées à ce cours.
+RÈGLE quiz : 1 question par notion/concept distinct. Min 4, max 10.
+Réponds avec du JSON valide UNIQUEMENT. Commence DIRECTEMENT par { sans aucun texte avant ni après.
 {
   "titre": "titre court du cours",
   "matiere": "math ou french ou history ou science ou english",
   "nb_questions": 6,
-  "resume": "résumé clair en 2-3 phrases pour élève de 12 ans",
-  "points_cles": ["notion clé 1", "notion clé 2", "notion clé 3"],
-  "quiz": [
-    {"q": "Question ?", "choices": ["A", "B", "C", "D"], "answer": 0}
-  ],
-  "flashcards": [
-    {"front": "Question courte ?", "back": "Réponse claire"}
-  ],
-  "jeu_vrai_faux": [
-    {"affirmation": "Affirmation sur le cours", "vrai": true}
-  ],
-  "astuce_memo": "astuce mémo originale et fun"
+  "resume": "résumé clair en 2-3 phrases",
+  "points_cles": ["notion 1", "notion 2", "notion 3"],
+  "quiz": [{"q": "Question ?", "choices": ["A","B","C","D"], "answer": 0}],
+  "flashcards": [{"front": "Question ?", "back": "Réponse"}],
+  "jeu_vrai_faux": [{"affirmation": "Affirmation", "vrai": true}],
+  "astuce_memo": "astuce mémo fun"
 }`;
+        raw = await api(prompt);
 
-      const raw = photos.length === 1
-        ? await api(systemPrompt, photos[0])
-        : await api(systemPrompt); // texte extrait déjà dans le prompt
+      } else if(photos.length === 1) {
+        // ── CAS 2 : Une seule photo ───────────────────────────────────────
+        setAnalyzeProgress("📖 Lecture de la photo...");
+        const extraText = content.trim() ? `\nNotes supplémentaires de l'élève : ${content.trim()}` : "";
+        const prompt = `Tu es un assistant pédagogique expert pour un élève de 5e (12 ans).
+Analyse cette photo de cours scolaire et génère des activités pédagogiques.${extraText}
+RÈGLE quiz : 1 question par notion/concept distinct. Min 4, max 10.
+Réponds avec du JSON valide UNIQUEMENT. Commence DIRECTEMENT par { sans aucun texte avant ni après.
+{
+  "titre": "titre court du cours",
+  "matiere": "math ou french ou history ou science ou english",
+  "nb_questions": 6,
+  "resume": "résumé clair en 2-3 phrases",
+  "points_cles": ["notion 1", "notion 2", "notion 3"],
+  "quiz": [{"q": "Question ?", "choices": ["A","B","C","D"], "answer": 0}],
+  "flashcards": [{"front": "Question ?", "back": "Réponse"}],
+  "jeu_vrai_faux": [{"affirmation": "Affirmation", "vrai": true}],
+  "astuce_memo": "astuce mémo fun"
+}`;
+        raw = await api(prompt, photos[0]);
+
+      } else {
+        // ── CAS 3 : Plusieurs photos ──────────────────────────────────────
+        const descriptions = [];
+        for(let i=0; i<photos.length; i++){
+          setAnalyzeProgress(`📖 Lecture page ${i+1}/${photos.length}...`);
+          const desc = await api(
+            `Transcris intégralement le contenu textuel de cette page de cours (page ${i+1}/${photos.length}). Recopie tous les titres, définitions, formules et exemples visibles. Ne résume pas.`,
+            photos[i]
+          );
+          descriptions.push(`--- PAGE ${i+1} ---\n${desc}`);
+        }
+        setAnalyzeProgress("🧠 Génération des activités...");
+        const combinedText = descriptions.join("\n\n");
+        const extraText = content.trim() ? `\nNotes supplémentaires : ${content.trim()}` : "";
+        const prompt = `Tu es un assistant pédagogique expert pour un élève de 5e (12 ans).
+Voici le contenu complet du cours (${photos.length} pages) :
+${combinedText}${extraText}
+
+Génère des activités pédagogiques sur l'ensemble de ce cours.
+RÈGLE quiz : 1 question par notion/concept distinct. Min 4, max 10.
+Réponds avec du JSON valide UNIQUEMENT. Commence DIRECTEMENT par { sans aucun texte avant ni après.
+{
+  "titre": "titre court du cours",
+  "matiere": "math ou french ou history ou science ou english",
+  "nb_questions": 6,
+  "resume": "résumé clair en 2-3 phrases",
+  "points_cles": ["notion 1", "notion 2", "notion 3"],
+  "quiz": [{"q": "Question ?", "choices": ["A","B","C","D"], "answer": 0}],
+  "flashcards": [{"front": "Question ?", "back": "Réponse"}],
+  "jeu_vrai_faux": [{"affirmation": "Affirmation", "vrai": true}],
+  "astuce_memo": "astuce mémo fun"
+}`;
+        raw = await api(prompt);
+      }
 
       const parsed = extractJSON(raw);
-      if(!parsed) throw new Error("JSON invalide : "+raw.slice(0,120));
+      if(!parsed) throw new Error("Réponse non JSON : " + raw.slice(0,200));
 
       setAnalysis(parsed);
-      if(parsed.titre) setTitle(parsed.titre);
+      if(parsed.titre && !title.trim()) setTitle(parsed.titre);
       if(parsed.matiere && SUBJECTS.find(s=>s.id===parsed.matiere)) setSubject(parsed.matiere);
-      if(parsed.resume) setContent(
+      if(parsed.resume && !content.trim()) setContent(
         parsed.resume +
         (parsed.points_cles?.length ? "\n\n📌 Points clés :\n"+parsed.points_cles.map(p=>"• "+p).join("\n") : "")
       );
+
     } catch(err){
-      console.error("Analyse IA:",err);
-      setAiError("L'IA n'a pas pu analyser le cours. Vérifie que les photos sont nettes et bien éclairées.\nDétail : "+err.message);
+      console.error("Analyse IA:", err);
+      setAiError("Analyse échouée.\nDétail : " + err.message);
     }
     setAnalyzing(false);
     setAnalyzeProgress("");
@@ -658,10 +694,15 @@ Format exact :
                 </div>
               )}
 
-              {/* ── Bouton Analyser ── */}
-              {photos.length > 0 && !analysis && !analyzing && (
-                <button onClick={analyzePhotos} style={{width:"100%",background:"linear-gradient(135deg,#43B89C,#2dd4bf)",border:"none",borderRadius:12,padding:"13px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:14,marginBottom:10}}>
-                  ✨ Analyser {photos.length > 1 ? `les ${photos.length} pages` : "la photo"} avec l'IA
+              {/* ── Bouton Analyser — visible si photo OU texte saisi ── */}
+              {canAnalyze && !analysis && !analyzing && (
+                <button onClick={analyzeContent} style={{width:"100%",background:"linear-gradient(135deg,#43B89C,#2dd4bf)",border:"none",borderRadius:12,padding:"14px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:14,marginBottom:10,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                  <span>✨</span>
+                  <span>
+                    {photos.length > 1 ? `Analyser les ${photos.length} pages` :
+                     photos.length === 1 ? "Analyser la photo" :
+                     "Générer quiz & activités depuis le texte"}
+                  </span>
                 </button>
               )}
 
@@ -683,7 +724,7 @@ Format exact :
                     <span style={{background:"#F7B73122",color:"#F7B731",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>⚡ {analysis.jeu_vrai_faux?.length} vrai/faux</span>
                   </div>
                   {analysis.astuce_memo&&<p style={{color:"#a78bfa",fontSize:12,margin:"8px 0 0",fontStyle:"italic"}}>💡 {analysis.astuce_memo}</p>}
-                  <button onClick={analyzePhotos} style={{marginTop:10,background:"none",border:"1px solid #43B89C44",borderRadius:8,padding:"5px 12px",color:"#43B89C",cursor:"pointer",fontSize:12}}>🔄 Relancer l'analyse</button>
+                  <button onClick={analyzeContent} style={{marginTop:10,background:"none",border:"1px solid #43B89C44",borderRadius:8,padding:"5px 12px",color:"#43B89C",cursor:"pointer",fontSize:12}}>🔄 Relancer l'analyse</button>
                 </div>
               )}
 
@@ -692,7 +733,7 @@ Format exact :
                 <div style={{background:"#200a0a",border:"1px solid #FF658455",borderRadius:12,padding:14,marginBottom:10}}>
                   <p style={{color:"#FF6584",fontSize:13,margin:"0 0 8px",fontWeight:700}}>❌ Analyse échouée</p>
                   <p style={{color:"#FF658488",fontSize:12,margin:"0 0 10px",lineHeight:1.5}}>{aiError}</p>
-                  <button onClick={analyzePhotos} style={{background:"none",border:"1px solid #FF658455",borderRadius:8,padding:"6px 14px",color:"#FF6584",cursor:"pointer",fontSize:12,fontWeight:700}}>🔄 Réessayer</button>
+                  <button onClick={analyzeContent} style={{background:"none",border:"1px solid #FF658455",borderRadius:8,padding:"6px 14px",color:"#FF6584",cursor:"pointer",fontSize:12,fontWeight:700}}>🔄 Réessayer</button>
                 </div>
               )}
             </div>
@@ -750,9 +791,10 @@ Format exact :
 };
 
 // ─── COURSE DETAIL ────────────────────────────────────────────────────────────
-const CourseDetail = ({course,onBack,onXP,onRecordAnswer,onRecordVF,onRecordCard,isTablet}) => {
+const CourseDetail = ({course,onBack,onXP,onRecordAnswer,onRecordVF,onRecordCard,onUpdateCourse,isTablet}) => {
   const sv=SUBJECTS.find(s=>s.id===course.subject)||SUBJECTS[0];
-  const ar=course.analysis; const hasAI=ar&&!ar.error;
+  const [localAnalysis,setLocalAnalysis]=useState(course.analysis||null);
+  const ar=localAnalysis; const hasAI=ar&&!ar.error&&ar.quiz?.length>0;
   const TABS=[
     {id:"resume",label:"📋 Résumé"},
     ...(hasAI&&ar.quiz?.length?[{id:"quiz",label:`🎯 Quiz (${ar.quiz.length}Q)`}]:[]),
@@ -765,12 +807,29 @@ const CourseDetail = ({course,onBack,onXP,onRecordAnswer,onRecordVF,onRecordCard
   const [fIdx,setFIdx]=useState(0);const [fFlip,setFFlip]=useState(false);
   const [vIdx,setVIdx]=useState(0);const [vScore,setVScore]=useState(0);const [vDone,setVDone]=useState(false);const [vFeed,setVFeed]=useState(null);
   const [bilan,setBilan]=useState("");const [bilanLoad,setBilanLoad]=useState(false);
+  const [generating,setGenerating]=useState(false);const [genError,setGenError]=useState("");
 
   const q=hasAI?ar.quiz:[];const fc=hasAI?ar.flashcards:[];const vf=hasAI?ar.jeu_vrai_faux:[];
 
   const handleQ=(i)=>{if(qSel!==null)return;setQSel(i);const ok=i===q[qIdx].answer;if(ok)setQScore(s=>s+1);if(onRecordAnswer)onRecordAnswer(sv.id,ok);else if(ok)onXP(10);setTimeout(()=>{if(qIdx+1<q.length){setQIdx(x=>x+1);setQSel(null);}else setQDone(true);},1100);};
   const handleVF=(ans)=>{const ok=ans===vf[vIdx].vrai;setVFeed(ok);if(ok)setVScore(s=>s+1);if(onRecordVF)onRecordVF(sv.id,ok);else if(ok)onXP(8);setTimeout(()=>{if(vIdx+1<vf.length){setVIdx(x=>x+1);setVFeed(null);}else setVDone(true);},1000);};
   const genBilan=async()=>{setBilanLoad(true);const txt=await api(`Prof bienveillant pour élève de 5e. Cours : "${course.title}" (${sv.label}). ${course.content||""}. ${hasAI?"Points clés : "+ar.points_cles?.join(", "):""}. Bilan motivant avec emojis : 1. 📌 Essentiel (3 bullets) 2. 💡 Exemple concret 3. ⚡ Astuce mémo fun 4. 🌟 Encouragement. Max 200 mots.`);setBilan(txt);setBilanLoad(false);onXP(15);};
+
+  const generateActivities=async()=>{
+    setGenerating(true);setGenError("");
+    try{
+      const courseText=(course.title?"Titre : "+course.title+"\nMatiè re : "+sv.label+"\n\n":"")+(course.content||"");
+      const raw=await api("Tu es assistant pédagogique pour élève de 5e. Cours:\n"+courseText+"\nGénère des activités. Réponds JSON uniquement, commence par {.\n{\"titre\":\""+course.title+"\",\"matiere\":\""+sv.id+"\",\"nb_questions\":6,\"resume\":\"2-3 phrases\",\"points_cles\":[\"p1\",\"p2\",\"p3\"],\"quiz\":[{\"q\":\"Q?\",\"choices\":[\"A\",\"B\",\"C\",\"D\"],\"answer\":0}],\"flashcards\":[{\"front\":\"Q?\",\"back\":\"R\"}],\"jeu_vrai_faux\":[{\"affirmation\":\"A\",\"vrai\":true}],\"astuce_memo\":\"astuce\"}");
+      let parsed=null;
+      const clean=raw.replace(/```json|```/gi,"").trim();
+      try{parsed=JSON.parse(clean);}catch(e){const m=clean.match(/\{[\s\S]*\}/);if(m)try{parsed=JSON.parse(m[0]);}catch(e2){}}
+      if(!parsed||!parsed.quiz?.length)throw new Error("Réponse invalide");
+      setLocalAnalysis(parsed);
+      if(onUpdateCourse)onUpdateCourse(course.id,parsed);
+      setTab("quiz");onXP(20);
+    }catch(err){setGenError(err.message);}
+    setGenerating(false);
+  };
 
   const pctQ=q.length>0?Math.round((qScore/q.length)*100):0;
 
@@ -817,7 +876,25 @@ const CourseDetail = ({course,onBack,onXP,onRecordAnswer,onRecordVF,onRecordCard
                 {ar.points_cles?.map((p,i)=><div key={i} style={{display:"flex",gap:10,marginBottom:8}}><span style={{color:"#43B89C",flexShrink:0}}>•</span><span style={{color:"#c5c5e0",fontSize:14,lineHeight:1.6}}>{p}</span></div>)}
               </div>
             )}
-            {course.content&&<div style={{background:"#1a1a2e",borderRadius:16,padding:20,border:"1px solid #2d2d4e",color:"#c5c5e0",fontSize:14,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{course.content}</div>}
+            {course.content&&<div style={{background:"#1a1a2e",borderRadius:16,padding:20,border:"1px solid #2d2d4e",color:"#c5c5e0",fontSize:14,lineHeight:1.8,whiteSpace:"pre-wrap",marginBottom:16}}>{course.content}</div>}
+
+            {/* ── Bouton générer si pas encore d'activités ── */}
+            {!hasAI && !generating && (
+              <div style={{background:"#1a1a2e",borderRadius:16,padding:20,border:"1px solid #6C63FF33",textAlign:"center"}}>
+                <div style={{fontSize:40,marginBottom:10}}>🎯</div>
+                <p style={{color:"#c5c5e0",fontSize:14,margin:"0 0 16px"}}>Ce cours n'a pas encore de quiz ni d'activités.</p>
+                <button onClick={generateActivities} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:12,padding:"13px 24px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:15,width:"100%"}}>
+                  ✨ Générer quiz & activités avec l'IA
+                </button>
+                {genError&&<p style={{color:"#FF6584",fontSize:12,marginTop:10}}>{genError}</p>}
+              </div>
+            )}
+            {generating&&(
+              <div style={{textAlign:"center",padding:"24px",background:"#1a1a2e",borderRadius:16,border:"1px solid #6C63FF33"}}>
+                <div style={{fontSize:28,animation:"spin 1s linear infinite",display:"inline-block"}}>⚙️</div>
+                <p style={{color:"#a78bfa",fontSize:13,marginTop:8}}>Génération du quiz et des activités...</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -1453,6 +1530,10 @@ function App(){
     addXP(50);
   };
 
+  const updateCourse=(id,analysis)=>{
+    setCourses(arr=>arr.map(c=>c.id===id?{...c,analysis}:c));
+  };
+
   const updateProfile=(p)=>{ setProfile(p); };
 
   const NAV=[
@@ -1468,7 +1549,7 @@ function App(){
 
   const renderContent=()=>{
     if(view==="courses"&&selectedCourse)
-      return <CourseDetail course={selectedCourse} onBack={()=>setSelectedCourse(null)} onXP={addXP} onRecordAnswer={recordAnswer} onRecordVF={recordVF} onRecordCard={recordCard} isTablet={isTablet}/>;
+      return <CourseDetail course={selectedCourse} onBack={()=>setSelectedCourse(null)} onXP={addXP} onRecordAnswer={recordAnswer} onRecordVF={recordVF} onRecordCard={recordCard} onUpdateCourse={updateCourse} isTablet={isTablet}/>;
     switch(view){
       case "home":       return <HomeView       xp={xp} level={level} streak={streak} badges={badges} courses={courses} onNavigate={navigate} isTablet={isTablet} profile={profile} rank={getRank(stats)}/>;
       case "courses":    return <CoursesView    courses={courses} onAddCourse={addCourse} onViewCourse={setSelectedCourse} isTablet={isTablet}/>;
