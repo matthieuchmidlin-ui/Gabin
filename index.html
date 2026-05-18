@@ -239,7 +239,7 @@ const api = async (msgs, img=null) => {
   let r;
   try {
     r = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey,
       {
         method: "POST",
         mode: "cors",
@@ -1530,7 +1530,7 @@ const SetupScreen = ({onSave}) => {
     setTesting(true); setError('');
     try {
       const r = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + trimmed,
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + trimmed,
         {
           method: "POST",
           mode: "cors",
