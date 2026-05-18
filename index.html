@@ -214,57 +214,69 @@ const fileToBase64 = f => new Promise((res,rej)=>{
   r.readAsDataURL(f);
 });
 
-// ── Gestion clé API ────────────────────────────────────────────────────────
+// ── Gestion clé API Gemini ───────────────────────────────────────────────
 const getApiKey = () => {
-  try { return localStorage.getItem('sq_api_key') || ''; } catch(e) { return ''; }
+  try { return localStorage.getItem('sq_gemini_key') || ''; } catch(e) { return ''; }
 };
 const setApiKey = (k) => {
-  try { localStorage.setItem('sq_api_key', k.trim()); } catch(e) {}
+  try { localStorage.setItem('sq_gemini_key', k.trim()); } catch(e) {}
 };
+
+// Convertit base64 image en part Gemini
+const imgToPart = (img) => ({
+  inlineData: { mimeType: img.type, data: img.base64 }
+});
 
 const api = async (msgs, img=null) => {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("CLÉ_MANQUANTE");
 
-  const content = img
-    ? [{type:"image",source:{type:"base64",media_type:img.type,data:img.base64}},{type:"text",text:msgs}]
-    : msgs;
+  // Construction des parts Gemini
+  const parts = [];
+  if (img) parts.push(imgToPart(img));
+  parts.push({ text: msgs });
 
   let r;
   try {
-    r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      mode: "cors",
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
-        messages: [{role:"user", content}]
-      })
-    });
+    r = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey,
+      {
+        method: "POST",
+        mode: "cors",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts }],
+          generationConfig: { maxOutputTokens: 2048, temperature: 0.4 }
+        })
+      }
+    );
   } catch(netErr) {
     throw new Error("Réseau inaccessible. Vérifie ta connexion. (" + netErr.message + ")");
   }
 
   if (!r.ok) {
     const errText = await r.text().catch(()=>"");
-    if (r.status === 401) {
-      // Effacer la clé invalide pour forcer la reconfiguration
-      try { localStorage.removeItem('sq_api_key'); } catch(e) {}
+    if (r.status === 400 && errText.includes("API_KEY")) {
+      try { localStorage.removeItem('sq_gemini_key'); } catch(e) {}
       throw new Error("CLÉ_INVALIDE");
     }
-    throw new Error("Erreur API " + r.status + ": " + errText.slice(0,120));
+    if (r.status === 401 || r.status === 403) {
+      try { localStorage.removeItem('sq_gemini_key'); } catch(e) {}
+      throw new Error("CLÉ_INVALIDE");
+    }
+    throw new Error("Erreur API " + r.status + ": " + errText.slice(0,150));
   }
 
   const d = await r.json();
-  if (d.error) throw new Error("Erreur Claude : " + d.error.message);
-  return d.content?.[0]?.text || "";
+  if (d.error) {
+    if (d.error.status === "INVALID_ARGUMENT" || d.error.status === "UNAUTHENTICATED") {
+      try { localStorage.removeItem('sq_gemini_key'); } catch(e) {}
+      throw new Error("CLÉ_INVALIDE");
+    }
+    throw new Error("Erreur Gemini : " + d.error.message);
+  }
+  return d.candidates?.[0]?.content?.parts?.[0]?.text || "";
 };
 
 const save = (k,v)=>{ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} };
@@ -754,8 +766,8 @@ Réponds avec du JSON valide UNIQUEMENT. Commence DIRECTEMENT par { sans aucun t
                   <div style={{background:"#200a0a",border:"1px solid #FF658455",borderRadius:12,padding:16,marginBottom:10,textAlign:"center"}}>
                     <div style={{fontSize:32,marginBottom:8}}>🔑</div>
                     <p style={{color:"#FF6584",fontSize:14,margin:"0 0 6px",fontWeight:700}}>Clé API invalide ou expirée</p>
-                    <p style={{color:"#FF658488",fontSize:12,margin:"0 0 14px"}}>Va sur console.anthropic.com pour générer une nouvelle clé.</p>
-                    <button onClick={()=>{try{localStorage.removeItem('sq_api_key');}catch(e){}window.location.reload();}} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:10,padding:"10px 20px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:13,width:"100%"}}>
+                    <p style={{color:"#FF658488",fontSize:12,margin:"0 0 14px"}}>Va sur aistudio.google.com pour générer une nouvelle clé Gemini gratuite.</p>
+                    <button onClick={()=>{try{localStorage.removeItem('sq_gemini_key');}catch(e){}window.location.reload();}} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:10,padding:"10px 20px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:13,width:"100%"}}>
                       ⚙️ Reconfigurer la clé API
                     </button>
                   </div>
@@ -927,7 +939,7 @@ const CourseDetail = ({course,onBack,onXP,onRecordAnswer,onRecordVF,onRecordCard
                   genError.includes("CLÉ") || genError.includes("401") ? (
                     <div style={{marginTop:12,background:"#200a0a",border:"1px solid #FF658444",borderRadius:10,padding:14,textAlign:"center"}}>
                       <p style={{color:"#FF6584",fontSize:13,margin:"0 0 10px",fontWeight:700}}>🔑 Clé API invalide ou expirée</p>
-                      <button onClick={()=>{try{localStorage.removeItem('sq_api_key');}catch(e){}window.location.reload();}} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:10,padding:"8px 18px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:13}}>
+                      <button onClick={()=>{try{localStorage.removeItem('sq_gemini_key');}catch(e){}window.location.reload();}} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:10,padding:"8px 18px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:13}}>
                         ⚙️ Reconfigurer la clé
                       </button>
                     </div>
@@ -1493,7 +1505,7 @@ const ProfileView = ({xp,level,streak,badges,courses,stats,profile,onUpdateProfi
         <div style={{background:"#1a1a2e",borderRadius:16,padding:16,border:"1px solid #2d2d4e"}}>
           <p style={{color:"#7c7cac",fontSize:13,margin:"0 0 10px",fontWeight:700}}>⚙️ Paramètres</p>
           <button onClick={()=>{setApiKey('');onChangeKey();}} style={{width:"100%",background:"#0f0f23",border:"1px solid #2d2d4e",borderRadius:10,padding:"10px 14px",color:"#FF6584",cursor:"pointer",fontSize:13,textAlign:"left",fontWeight:600}}>
-            🔑 Changer la clé API Anthropic
+            🔑 Changer la clé Gemini (Google AI)
           </button>
         </div>
       </div>
@@ -1511,47 +1523,37 @@ const SetupScreen = ({onSave}) => {
 
   const testAndSave = async () => {
     const trimmed = key.trim();
-    // Validation souple : la clé doit juste contenir "sk-ant"
-    if (!trimmed.includes('sk-ant')) {
-      setError("La clé Anthropic doit contenir 'sk-ant'. Vérifie la copie.");
+    if (trimmed.length < 20) {
+      setError("La clé semble trop courte. Vérifie la copie.");
       return;
     }
     setTesting(true); setError('');
     try {
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        mode: "cors",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": trimmed,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 10,
-          messages: [{role:"user", content:"ok"}]
-        })
-      });
+      const r = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + trimmed,
+        {
+          method: "POST",
+          mode: "cors",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role:"user", parts:[{ text:"ok" }] }],
+            generationConfig: { maxOutputTokens: 5 }
+          })
+        }
+      );
       const data = await r.json().catch(()=>({}));
-      if (r.status === 401) {
-        setError("❌ Clé refusée par Anthropic. Vérifie qu'elle est bien copiée en entier.");
+      if (r.status === 400 || r.status === 401 || r.status === 403) {
+        setError("❌ Clé refusée. Vérifie qu\'elle est bien copiée depuis Google AI Studio.");
         setTesting(false);
         return;
       }
-      if (!r.ok) {
-        setError("Erreur " + r.status + " : " + (data?.error?.message || "réessaie"));
-        setTesting(false);
-        return;
-      }
-      // ✅ Clé valide — on sauvegarde
+      // Succès ou erreur réseau tolérée → on sauvegarde
       setApiKey(trimmed);
       onSave();
     } catch(e) {
-      // Sur iOS, le CORS peut bloquer même avec une bonne clé
-      // On sauvegarde quand même si la clé a le bon format
-      if (trimmed.includes('sk-ant') && trimmed.length > 20) {
+      // Problème réseau/CORS → on sauvegarde quand même si longueur ok
+      if (trimmed.length > 20) {
         setApiKey(trimmed);
         onSave();
       } else {
@@ -1562,89 +1564,77 @@ const SetupScreen = ({onSave}) => {
   };
 
   return (
-    <div style={{
-      minHeight:"100vh", background:"#0f0f23",
-      display:"flex", flexDirection:"column", alignItems:"center",
-      justifyContent:"center", padding:"24px", fontFamily:"'Nunito',sans-serif"
-    }}>
-      <div style={{maxWidth:420, width:"100%"}}>
-        {/* Logo */}
-        <div style={{textAlign:"center", marginBottom:32}}>
-          <div style={{fontSize:64, marginBottom:12}}>🚀</div>
-          <h1 style={{color:"#fff", fontSize:32, margin:"0 0 6px", fontFamily:"'Fredoka One',cursive"}}>
+    <div style={{minHeight:"100vh",background:"#0f0f23",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"24px",fontFamily:"'Nunito',sans-serif"}}>
+      <div style={{maxWidth:420,width:"100%"}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{fontSize:64,marginBottom:12}}>🚀</div>
+          <h1 style={{color:"#fff",fontSize:32,margin:"0 0 6px",fontFamily:"'Fredoka One',cursive"}}>
             Study<span style={{color:"#a78bfa"}}>Quest</span>
           </h1>
-          <p style={{color:"#7c7cac", margin:0, fontSize:15}}>L'app d'apprentissage de ton fils 🎓</p>
+          <p style={{color:"#7c7cac",margin:0,fontSize:15}}>L\'app d\'apprentissage de ton fils 🎓</p>
         </div>
 
-        {/* Card config */}
-        <div style={{background:"#1a1a2e", borderRadius:20, padding:24, border:"1px solid #6C63FF44"}}>
-          <h2 style={{color:"#fff", fontSize:18, margin:"0 0 8px"}}>🔑 Configuration initiale</h2>
-          <p style={{color:"#7c7cac", fontSize:13, margin:"0 0 20px", lineHeight:1.6}}>
-            Pour que l'IA génère les quiz et activités, il faut une clé API Anthropic.
-            C'est <strong style={{color:"#a78bfa"}}>gratuit pour commencer</strong> (5$ de crédit offert).
+        <div style={{background:"#1a1a2e",borderRadius:20,padding:24,border:"1px solid #6C63FF44"}}>
+          <h2 style={{color:"#fff",fontSize:18,margin:"0 0 8px"}}>🔑 Configuration — Clé Gemini</h2>
+          <p style={{color:"#7c7cac",fontSize:13,margin:"0 0 20px",lineHeight:1.6}}>
+            StudyQuest utilise <strong style={{color:"#43B89C"}}>Google Gemini — 100% gratuit</strong> pour analyser les cours et générer les quiz.
           </p>
 
-          {/* Étapes */}
-          <div style={{background:"#0f0f23", borderRadius:12, padding:16, marginBottom:20}}>
-            <p style={{color:"#a78bfa", fontWeight:700, fontSize:13, margin:"0 0 10px"}}>📋 Comment obtenir une clé ?</p>
+          <div style={{background:"#0a1f18",border:"1px solid #43B89C44",borderRadius:12,padding:16,marginBottom:20}}>
+            <p style={{color:"#43B89C",fontWeight:700,fontSize:13,margin:"0 0 12px"}}>📋 Obtenir la clé gratuite (2 min)</p>
             {[
-              "Va sur console.anthropic.com",
-              "Crée un compte gratuit",
-              "Clique sur \"API Keys\" → \"Create Key\"",
-              "Copie la clé (commence par sk-ant-...)",
-              "Colle-la ici 👇"
+              {n:1, text:"Va sur ", link:"aistudio.google.com", href:"https://aistudio.google.com"},
+              {n:2, text:"Connecte-toi avec ton compte Google"},
+              {n:3, text:"Clique sur "Get API Key" (en haut à gauche)"},
+              {n:4, text:""Create API key" → copie la clé"},
+              {n:5, text:"Colle-la ci-dessous 👇"},
             ].map((s,i)=>(
-              <div key={i} style={{display:"flex", gap:10, marginBottom:6, alignItems:"flex-start"}}>
-                <span style={{color:"#6C63FF", fontWeight:800, fontSize:13, flexShrink:0, minWidth:18}}>{i+1}.</span>
-                <span style={{color:"#c5c5e0", fontSize:13}}>{s}</span>
+              <div key={i} style={{display:"flex",gap:10,marginBottom:8,alignItems:"flex-start"}}>
+                <span style={{color:"#43B89C",fontWeight:800,fontSize:13,flexShrink:0,minWidth:18}}>{s.n}.</span>
+                <span style={{color:"#c5c5e0",fontSize:13}}>
+                  {s.text}
+                  {s.link && <a href={s.href} target="_blank" rel="noreferrer" style={{color:"#a78bfa",fontWeight:700}}>{s.link}</a>}
+                </span>
               </div>
             ))}
+            <div style={{marginTop:12,padding:"8px 12px",background:"#43B89C22",borderRadius:8}}>
+              <p style={{color:"#43B89C",fontSize:12,margin:0}}>✅ <strong>Entièrement gratuit</strong> — quota généreux pour un usage scolaire quotidien.</p>
+            </div>
           </div>
 
-          {/* Input clé */}
-          <div style={{position:"relative", marginBottom:12}}>
+          <div style={{position:"relative",marginBottom:12}}>
             <input
               value={key}
               onChange={e=>setKey(e.target.value)}
+              onPaste={e=>{ setTimeout(()=>{ const v=e.target.value.trim(); if(v) setKey(v); },50); }}
               type={showKey?"text":"password"}
-              placeholder="sk-ant-api03-..."
-              style={{
-                width:"100%", background:"#0f0f23", border:"1px solid #2d2d4e",
-                borderRadius:10, padding:"12px 44px 12px 14px", color:"#fff",
-                fontSize:14, outline:"none", boxSizing:"border-box",
-                fontFamily:"monospace"
-              }}
+              placeholder="AIza..."
+              style={{width:"100%",background:"#0f0f23",border:"1px solid #2d2d4e",borderRadius:10,padding:"12px 44px 12px 14px",color:"#fff",fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"monospace"}}
             />
-            <button onClick={()=>setShowKey(s=>!s)} style={{
-              position:"absolute", right:10, top:"50%", transform:"translateY(-50%)",
-              background:"none", border:"none", color:"#7c7cac", cursor:"pointer", fontSize:16
-            }}>{showKey?"🙈":"👁️"}</button>
+            <button onClick={()=>setShowKey(s=>!s)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"#7c7cac",cursor:"pointer",fontSize:16}}>
+              {showKey?"🙈":"👁️"}
+            </button>
           </div>
 
           {error && (
-            <div style={{background:"#200a0a", border:"1px solid #FF658444", borderRadius:10, padding:"10px 14px", marginBottom:12}}>
-              <p style={{color:"#FF6584", fontSize:13, margin:0}}>❌ {error}</p>
+            <div style={{background:"#200a0a",border:"1px solid #FF658444",borderRadius:10,padding:"10px 14px",marginBottom:12}}>
+              <p style={{color:"#FF6584",fontSize:13,margin:0}}>{error}</p>
             </div>
           )}
 
-          <button onClick={testAndSave} disabled={!key.trim() || testing} style={{
-            width:"100%", background:key.trim()?"linear-gradient(135deg,#6C63FF,#a78bfa)":"#2d2d4e",
-            border:"none", borderRadius:12, padding:"14px", color:"#fff",
-            fontWeight:700, cursor:key.trim()?"pointer":"not-allowed", fontSize:16
-          }}>
+          <button onClick={testAndSave} disabled={!key.trim()||testing} style={{width:"100%",background:key.trim()?"linear-gradient(135deg,#43B89C,#2dd4bf)":"#2d2d4e",border:"none",borderRadius:12,padding:"14px",color:key.trim()?"#0f0f23":"#fff",fontWeight:800,cursor:key.trim()?"pointer":"not-allowed",fontSize:16}}>
             {testing ? "⏳ Vérification..." : "✅ Enregistrer et démarrer"}
           </button>
 
-          <p style={{color:"#4a4a6a", fontSize:11, textAlign:"center", margin:"12px 0 0", lineHeight:1.5}}>
-            🔒 La clé est stockée uniquement sur cet appareil.<br/>
-            Elle n'est jamais partagée ni envoyée ailleurs.
+          <p style={{color:"#4a4a6a",fontSize:11,textAlign:"center",margin:"12px 0 0",lineHeight:1.5}}>
+            🔒 La clé est stockée uniquement sur cet appareil.
           </p>
         </div>
       </div>
     </div>
   );
 };
+
 
 function App(){
   const isTablet = useIsTablet();
