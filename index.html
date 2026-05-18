@@ -1544,7 +1544,7 @@ const SetupScreen = ({onSave}) => {
       );
       const data = await r.json().catch(()=>({}));
       if (r.status === 400 || r.status === 401 || r.status === 403) {
-        setError("❌ Clé refusée. Vérifie qu\'elle est bien copiée depuis Google AI Studio.");
+        setError("❌ Clé refusée. Vérifie qu'elle est bien copiée depuis Google AI Studio.");
         setTesting(false);
         return;
       }
@@ -1571,7 +1571,7 @@ const SetupScreen = ({onSave}) => {
           <h1 style={{color:"#fff",fontSize:32,margin:"0 0 6px",fontFamily:"'Fredoka One',cursive"}}>
             Study<span style={{color:"#a78bfa"}}>Quest</span>
           </h1>
-          <p style={{color:"#7c7cac",margin:0,fontSize:15}}>L\'app d\'apprentissage de ton fils 🎓</p>
+          <p style={{color:"#7c7cac",margin:0,fontSize:15}}>L'app d'apprentissage de ton fils 🎓</p>
         </div>
 
         <div style={{background:"#1a1a2e",borderRadius:20,padding:24,border:"1px solid #6C63FF44"}}>
@@ -1585,8 +1585,8 @@ const SetupScreen = ({onSave}) => {
             {[
               {n:1, text:"Va sur ", link:"aistudio.google.com", href:"https://aistudio.google.com"},
               {n:2, text:"Connecte-toi avec ton compte Google"},
-              {n:3, text:"Clique sur "Get API Key" (en haut à gauche)"},
-              {n:4, text:""Create API key" → copie la clé"},
+              {n:3, text:'Clique sur "Get API Key" (en haut à gauche)'},
+              {n:4, text:'Crée une clé API → copie-la'},
               {n:5, text:"Colle-la ci-dessous 👇"},
             ].map((s,i)=>(
               <div key={i} style={{display:"flex",gap:10,marginBottom:8,alignItems:"flex-start"}}>
