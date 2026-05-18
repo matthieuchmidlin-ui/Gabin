@@ -214,13 +214,22 @@ const fileToBase64 = f => new Promise((res,rej)=>{
   r.readAsDataURL(f);
 });
 
+// ── Gestion clé API ────────────────────────────────────────────────────────
+const getApiKey = () => {
+  try { return localStorage.getItem('sq_api_key') || ''; } catch(e) { return ''; }
+};
+const setApiKey = (k) => {
+  try { localStorage.setItem('sq_api_key', k.trim()); } catch(e) {}
+};
+
 const api = async (msgs, img=null) => {
+  const apiKey = getApiKey();
+  if (!apiKey) throw new Error("CLÉ_MANQUANTE");
+
   const content = img
     ? [{type:"image",source:{type:"base64",media_type:img.type,data:img.base64}},{type:"text",text:msgs}]
     : msgs;
 
-  // Sur iOS, le service worker peut interférer avec les requêtes POST.
-  // On force mode:'cors' et on évite tout cache intermédiaire.
   let r;
   try {
     r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -229,6 +238,8 @@ const api = async (msgs, img=null) => {
       cache: "no-store",
       headers: {
         "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
         "anthropic-dangerous-direct-browser-access": "true",
       },
       body: JSON.stringify({
@@ -238,12 +249,17 @@ const api = async (msgs, img=null) => {
       })
     });
   } catch(netErr) {
-    throw new Error("Réseau inaccessible. Vérifie ta connexion internet. (" + netErr.message + ")");
+    throw new Error("Réseau inaccessible. Vérifie ta connexion. (" + netErr.message + ")");
   }
 
   if (!r.ok) {
     const errText = await r.text().catch(()=>"");
-    throw new Error(`Erreur API ${r.status}: ${errText.slice(0,120)}`);
+    if (r.status === 401) {
+      // Effacer la clé invalide pour forcer la reconfiguration
+      try { localStorage.removeItem('sq_api_key'); } catch(e) {}
+      throw new Error("CLÉ_INVALIDE");
+    }
+    throw new Error("Erreur API " + r.status + ": " + errText.slice(0,120));
   }
 
   const d = await r.json();
@@ -590,7 +606,11 @@ Réponds avec du JSON valide UNIQUEMENT. Commence DIRECTEMENT par { sans aucun t
 
     } catch(err){
       console.error("Analyse IA:", err);
-      setAiError("Analyse échouée.\nDétail : " + err.message);
+      if(err.message==="CLÉ_MANQUANTE"||err.message==="CLÉ_INVALIDE"){
+        setAiError("CLÉ_KO");
+      } else {
+        setAiError("Analyse échouée.\nDétail : " + err.message);
+      }
     }
     setAnalyzing(false);
     setAnalyzeProgress("");
@@ -730,11 +750,22 @@ Réponds avec du JSON valide UNIQUEMENT. Commence DIRECTEMENT par { sans aucun t
 
               {/* ── Erreur ── */}
               {aiError && (
-                <div style={{background:"#200a0a",border:"1px solid #FF658455",borderRadius:12,padding:14,marginBottom:10}}>
-                  <p style={{color:"#FF6584",fontSize:13,margin:"0 0 8px",fontWeight:700}}>❌ Analyse échouée</p>
-                  <p style={{color:"#FF658488",fontSize:12,margin:"0 0 10px",lineHeight:1.5}}>{aiError}</p>
-                  <button onClick={analyzeContent} style={{background:"none",border:"1px solid #FF658455",borderRadius:8,padding:"6px 14px",color:"#FF6584",cursor:"pointer",fontSize:12,fontWeight:700}}>🔄 Réessayer</button>
-                </div>
+                aiError === "CLÉ_KO" ? (
+                  <div style={{background:"#200a0a",border:"1px solid #FF658455",borderRadius:12,padding:16,marginBottom:10,textAlign:"center"}}>
+                    <div style={{fontSize:32,marginBottom:8}}>🔑</div>
+                    <p style={{color:"#FF6584",fontSize:14,margin:"0 0 6px",fontWeight:700}}>Clé API invalide ou expirée</p>
+                    <p style={{color:"#FF658488",fontSize:12,margin:"0 0 14px"}}>Va sur console.anthropic.com pour générer une nouvelle clé.</p>
+                    <button onClick={()=>{try{localStorage.removeItem('sq_api_key');}catch(e){}window.location.reload();}} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:10,padding:"10px 20px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:13,width:"100%"}}>
+                      ⚙️ Reconfigurer la clé API
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{background:"#200a0a",border:"1px solid #FF658455",borderRadius:12,padding:14,marginBottom:10}}>
+                    <p style={{color:"#FF6584",fontSize:13,margin:"0 0 8px",fontWeight:700}}>❌ Analyse échouée</p>
+                    <p style={{color:"#FF658488",fontSize:12,margin:"0 0 10px",lineHeight:1.5,whiteSpace:"pre-wrap"}}>{aiError}</p>
+                    <button onClick={analyzeContent} style={{background:"none",border:"1px solid #FF658455",borderRadius:8,padding:"6px 14px",color:"#FF6584",cursor:"pointer",fontSize:12,fontWeight:700}}>🔄 Réessayer</button>
+                  </div>
+                )
               )}
             </div>
 
@@ -827,7 +858,13 @@ const CourseDetail = ({course,onBack,onXP,onRecordAnswer,onRecordVF,onRecordCard
       setLocalAnalysis(parsed);
       if(onUpdateCourse)onUpdateCourse(course.id,parsed);
       setTab("quiz");onXP(20);
-    }catch(err){setGenError(err.message);}
+    }catch(err){
+      if(err.message==="CLÉ_MANQUANTE"||err.message==="CLÉ_INVALIDE"){
+        setGenError("CLÉ_KO");
+      } else {
+        setGenError(err.message);
+      }
+    }
     setGenerating(false);
   };
 
@@ -886,7 +923,21 @@ const CourseDetail = ({course,onBack,onXP,onRecordAnswer,onRecordVF,onRecordCard
                 <button onClick={generateActivities} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:12,padding:"13px 24px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:15,width:"100%"}}>
                   ✨ Générer quiz & activités avec l'IA
                 </button>
-                {genError&&<p style={{color:"#FF6584",fontSize:12,marginTop:10}}>{genError}</p>}
+                {genError && (
+                  genError.includes("CLÉ") || genError.includes("401") ? (
+                    <div style={{marginTop:12,background:"#200a0a",border:"1px solid #FF658444",borderRadius:10,padding:14,textAlign:"center"}}>
+                      <p style={{color:"#FF6584",fontSize:13,margin:"0 0 10px",fontWeight:700}}>🔑 Clé API invalide ou expirée</p>
+                      <button onClick={()=>{try{localStorage.removeItem('sq_api_key');}catch(e){}window.location.reload();}} style={{background:"linear-gradient(135deg,#6C63FF,#a78bfa)",border:"none",borderRadius:10,padding:"8px 18px",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:13}}>
+                        ⚙️ Reconfigurer la clé
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{marginTop:10}}>
+                      <p style={{color:"#FF6584",fontSize:12,margin:"0 0 8px"}}>{genError}</p>
+                      <button onClick={generateActivities} style={{background:"none",border:"1px solid #FF658455",borderRadius:8,padding:"5px 12px",color:"#FF6584",cursor:"pointer",fontSize:12}}>🔄 Réessayer</button>
+                    </div>
+                  )
+                )}
               </div>
             )}
             {generating&&(
@@ -1297,7 +1348,7 @@ const RadarChart = ({subjectStats}) => {
 };
 
 // ── ProfileView ───────────────────────────────────────────────────────────────
-const ProfileView = ({xp,level,streak,badges,courses,stats,profile,onUpdateProfile,isTablet}) => {
+const ProfileView = ({xp,level,streak,badges,courses,stats,profile,onUpdateProfile,onChangeKey,isTablet}) => {
   const [editing, setEditing] = useState(false);
   const [name,    setName]    = useState(profile.name||"");
   const [classe,  setClasse]  = useState(profile.classe||"5ème");
@@ -1434,8 +1485,16 @@ const ProfileView = ({xp,level,streak,badges,courses,stats,profile,onUpdateProfi
 
         {/* ── BADGES ── */}
         <h3 style={{color:"#a78bfa",fontSize:12,letterSpacing:2,textTransform:"uppercase",margin:"0 0 14px",fontWeight:700}}>Mes Badges</h3>
-        <div style={{background:"#1a1a2e",borderRadius:20,padding:20,border:"1px solid #2d2d4e",display:"flex",gap:16,flexWrap:"wrap",justifyContent:"center"}}>
+        <div style={{background:"#1a1a2e",borderRadius:20,padding:20,border:"1px solid #2d2d4e",display:"flex",gap:16,flexWrap:"wrap",justifyContent:"center",marginBottom:20}}>
           {badges.map(b=><BadgeItem key={b.id} {...b}/>)}
+        </div>
+
+        {/* Clé API */}
+        <div style={{background:"#1a1a2e",borderRadius:16,padding:16,border:"1px solid #2d2d4e"}}>
+          <p style={{color:"#7c7cac",fontSize:13,margin:"0 0 10px",fontWeight:700}}>⚙️ Paramètres</p>
+          <button onClick={()=>{setApiKey('');onChangeKey();}} style={{width:"100%",background:"#0f0f23",border:"1px solid #2d2d4e",borderRadius:10,padding:"10px 14px",color:"#FF6584",cursor:"pointer",fontSize:13,textAlign:"left",fontWeight:600}}>
+            🔑 Changer la clé API Anthropic
+          </button>
         </div>
       </div>
     </div>
@@ -1443,8 +1502,153 @@ const ProfileView = ({xp,level,streak,badges,courses,stats,profile,onUpdateProfi
 };
 
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
+// ── Écran de configuration clé API ────────────────────────────────────────
+const SetupScreen = ({onSave}) => {
+  const [key, setKey] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [error, setError] = useState('');
+  const [showKey, setShowKey] = useState(false);
+
+  const testAndSave = async () => {
+    const trimmed = key.trim();
+    // Validation souple : la clé doit juste contenir "sk-ant"
+    if (!trimmed.includes('sk-ant')) {
+      setError("La clé Anthropic doit contenir 'sk-ant'. Vérifie la copie.");
+      return;
+    }
+    setTesting(true); setError('');
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        mode: "cors",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": trimmed,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 10,
+          messages: [{role:"user", content:"ok"}]
+        })
+      });
+      const data = await r.json().catch(()=>({}));
+      if (r.status === 401) {
+        setError("❌ Clé refusée par Anthropic. Vérifie qu'elle est bien copiée en entier.");
+        setTesting(false);
+        return;
+      }
+      if (!r.ok) {
+        setError("Erreur " + r.status + " : " + (data?.error?.message || "réessaie"));
+        setTesting(false);
+        return;
+      }
+      // ✅ Clé valide — on sauvegarde
+      setApiKey(trimmed);
+      onSave();
+    } catch(e) {
+      // Sur iOS, le CORS peut bloquer même avec une bonne clé
+      // On sauvegarde quand même si la clé a le bon format
+      if (trimmed.includes('sk-ant') && trimmed.length > 20) {
+        setApiKey(trimmed);
+        onSave();
+      } else {
+        setError("Connexion impossible : " + e.message);
+      }
+    }
+    setTesting(false);
+  };
+
+  return (
+    <div style={{
+      minHeight:"100vh", background:"#0f0f23",
+      display:"flex", flexDirection:"column", alignItems:"center",
+      justifyContent:"center", padding:"24px", fontFamily:"'Nunito',sans-serif"
+    }}>
+      <div style={{maxWidth:420, width:"100%"}}>
+        {/* Logo */}
+        <div style={{textAlign:"center", marginBottom:32}}>
+          <div style={{fontSize:64, marginBottom:12}}>🚀</div>
+          <h1 style={{color:"#fff", fontSize:32, margin:"0 0 6px", fontFamily:"'Fredoka One',cursive"}}>
+            Study<span style={{color:"#a78bfa"}}>Quest</span>
+          </h1>
+          <p style={{color:"#7c7cac", margin:0, fontSize:15}}>L'app d'apprentissage de ton fils 🎓</p>
+        </div>
+
+        {/* Card config */}
+        <div style={{background:"#1a1a2e", borderRadius:20, padding:24, border:"1px solid #6C63FF44"}}>
+          <h2 style={{color:"#fff", fontSize:18, margin:"0 0 8px"}}>🔑 Configuration initiale</h2>
+          <p style={{color:"#7c7cac", fontSize:13, margin:"0 0 20px", lineHeight:1.6}}>
+            Pour que l'IA génère les quiz et activités, il faut une clé API Anthropic.
+            C'est <strong style={{color:"#a78bfa"}}>gratuit pour commencer</strong> (5$ de crédit offert).
+          </p>
+
+          {/* Étapes */}
+          <div style={{background:"#0f0f23", borderRadius:12, padding:16, marginBottom:20}}>
+            <p style={{color:"#a78bfa", fontWeight:700, fontSize:13, margin:"0 0 10px"}}>📋 Comment obtenir une clé ?</p>
+            {[
+              "Va sur console.anthropic.com",
+              "Crée un compte gratuit",
+              "Clique sur \"API Keys\" → \"Create Key\"",
+              "Copie la clé (commence par sk-ant-...)",
+              "Colle-la ici 👇"
+            ].map((s,i)=>(
+              <div key={i} style={{display:"flex", gap:10, marginBottom:6, alignItems:"flex-start"}}>
+                <span style={{color:"#6C63FF", fontWeight:800, fontSize:13, flexShrink:0, minWidth:18}}>{i+1}.</span>
+                <span style={{color:"#c5c5e0", fontSize:13}}>{s}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Input clé */}
+          <div style={{position:"relative", marginBottom:12}}>
+            <input
+              value={key}
+              onChange={e=>setKey(e.target.value)}
+              type={showKey?"text":"password"}
+              placeholder="sk-ant-api03-..."
+              style={{
+                width:"100%", background:"#0f0f23", border:"1px solid #2d2d4e",
+                borderRadius:10, padding:"12px 44px 12px 14px", color:"#fff",
+                fontSize:14, outline:"none", boxSizing:"border-box",
+                fontFamily:"monospace"
+              }}
+            />
+            <button onClick={()=>setShowKey(s=>!s)} style={{
+              position:"absolute", right:10, top:"50%", transform:"translateY(-50%)",
+              background:"none", border:"none", color:"#7c7cac", cursor:"pointer", fontSize:16
+            }}>{showKey?"🙈":"👁️"}</button>
+          </div>
+
+          {error && (
+            <div style={{background:"#200a0a", border:"1px solid #FF658444", borderRadius:10, padding:"10px 14px", marginBottom:12}}>
+              <p style={{color:"#FF6584", fontSize:13, margin:0}}>❌ {error}</p>
+            </div>
+          )}
+
+          <button onClick={testAndSave} disabled={!key.trim() || testing} style={{
+            width:"100%", background:key.trim()?"linear-gradient(135deg,#6C63FF,#a78bfa)":"#2d2d4e",
+            border:"none", borderRadius:12, padding:"14px", color:"#fff",
+            fontWeight:700, cursor:key.trim()?"pointer":"not-allowed", fontSize:16
+          }}>
+            {testing ? "⏳ Vérification..." : "✅ Enregistrer et démarrer"}
+          </button>
+
+          <p style={{color:"#4a4a6a", fontSize:11, textAlign:"center", margin:"12px 0 0", lineHeight:1.5}}>
+            🔒 La clé est stockée uniquement sur cet appareil.<br/>
+            Elle n'est jamais partagée ni envoyée ailleurs.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 function App(){
   const isTablet = useIsTablet();
+  const [hasKey, setHasKey] = useState(()=>!!getApiKey());
   const [view,setView]   = useState("home");
   const [xp,setXp]       = useState(()=>load("sq_xp",120));
   const [level,setLevel] = useState(()=>load("sq_level",2));
@@ -1556,10 +1760,13 @@ function App(){
       case "quiz":       return <QuizView       onXP={addXP} onRecordAnswer={recordAnswer} isTablet={isTablet}/>;
       case "flashcards": return <FlashcardsView onXP={addXP} onRecordCard={recordCard} isTablet={isTablet}/>;
       case "games":      return <GamesView      onXP={addXP} isTablet={isTablet}/>;
-      case "profile":    return <ProfileView    xp={xp} level={level} streak={streak} badges={badges} courses={courses} stats={stats} profile={profile} onUpdateProfile={updateProfile} isTablet={isTablet}/>;
+      case "profile":    return <ProfileView    xp={xp} level={level} streak={streak} badges={badges} courses={courses} stats={stats} profile={profile} onUpdateProfile={updateProfile} onChangeKey={()=>setHasKey(false)} isTablet={isTablet}/>;
       default: return null;
     }
   };
+
+  // Afficher l'écran de config si pas de clé
+  if (!hasKey) return <SetupScreen onSave={()=>setHasKey(true)}/>;
 
   return(
     <div className="app-shell">
